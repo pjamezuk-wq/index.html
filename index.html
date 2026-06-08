@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitoreo Perimetral de Centros de Salud - Santa Fe</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <style>
+        body { margin: 0; padding: 0; font-family: Arial, sans-serif; }
+        #map { width: 100vw; height: 100vh; }
+        .info-panel {
+            position: absolute; top: 10px; right: 10px; z-index: 1000;
+            background: white; padding: 15px; border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3); max-width: 330px;
+        }
+        .info-panel h3 { margin-top: 0; color: #0056b3; font-size: 16px; }
+        .legend-item { display: flex; align-items: center; margin-bottom: 8px; font-size: 13px; }
+        .legend-box { display: inline-block; width: 15px; height: 15px; margin-right: 8px; border: 2px solid; }
+        .btn-update {
+            width: 100%; padding: 10px; background: #007bff; color: white;
+            border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 13px;
+        }
+        .btn-update:hover { background: #0056b3; }
+        #status, #alert-box { margin-top: 10px; font-size: 12px; }
+        .alert-active { padding: 10px; background: #f8d7da; color: #721c24; border-radius: 4px; border: 1px solid #f5c6cb; font-weight: bold; }
+        .alert-normal { padding: 10px; background: #d4edda; color: #155724; border-radius: 4px; border: 1px solid #c3e6cb; }
+    </style>
+</head>
+<body>
+
+    <div class="info-panel">
+        <h3>Área de Cobertura Sanitaria</h3>
+        <p style="font-size: 11px; color: #555; margin-bottom: 12px;">Se genera un polígono perimetral que unifica todos los efectores de salud analizando intersecciones con cortes de la EPE.</p>
+        
+        <div class="legend-item">
+            <span class="legend-box" style="background: rgba(0, 123, 255, 0.15); border-color: #007bff; border-style: dashed;"></span>
+            <span>Polígono Perimetral de Salud</span>
+        </div>
+        <div class="legend-item">
+            <span class="legend-box" style="background: rgba(255, 51, 51, 0.4); border-color: #ff0000;"></span>
+            <span>Corte Programado EPE</span>
+        </div>
+        
+        <button class="btn-update" onclick="procesarMonitoreo()">🔄 Sincronizar y Evaluar Perímetro</button>
+        
+        <div id="alert-box"></div>
+        <div id="status"></div>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+    <script>
+        // 1. Inicializar mapa centrado en la región de Santa Fe
+        const map = L.map('map').setView([-31.625, -60.68], 12);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap colaboradores'
+        }).addTo(map);
+
+        // 2. Parámetros de ubicación de tus centros de salud [Latitud, Longitud]
+        // Se corrigió "Aceria" para asimilarse al resto del array y se removieron duplicados de procesamiento.
+        const centrosSalud = [
+            { nombre: "Centro de Salud Mendoza Oeste", coords: [-31.64289, -60.73231] },
+            { nombre: "Centro de Salud Chalet", coords: [-31.66197, -60.72852] },
+            { nombre: "Policlinico Centenario", coords: [-31.6633, -60.71875] },
+            { nombre: "Centro de Salud Centenario", coords: [-31.66299, -60.72695] },
+            { nombre: "Centro de Salud Emaus", coords: [-31.66878, -60.72632] },
+            { nombre: "Centro de Salud Varadero Sarsoti", coords: [-31.66723, -60.73427] },
+            { nombre: "Centro de Salud San Lorenzo", coords: [-31.65579, -60.7297] },
+            { nombre: "Centro de Salud Evita", coords: [-31.64878, -60.72651] },
+            { nombre: "Centro de Salud Altos del Valle", coords: [-31.57357, -60.6844] },
+            { nombre: "Centro de Salud Altos de Noguera", coords: [-31.56647, -60.70465] },
+            { nombre: "Centro de Salud Callejon Roca", coords: [-31.57853, -60.68429] },
+            { nombre: "Centro de Salud Las Delicias", coords: [-31.58286, -60.69531] },
+            { nombre: "Centro de Salud San Martin Nº 8", coords: [-31.59681, -60.71695] },
+            { nombre: "Centro de Salud San Martin de Porres", coords: [-31.59268, -60.69884] },
+            { nombre: "Centro de Salud San Jose", coords: [-31.60316, -60.70486] },
+            { nombre: "Centro de Salud Las Flores", coords: [-31.59304, -60.71303] },
+            { nombre: "Centro de Salud Pompeya", coords: [-31.58656, -60.70944] },
+            { nombre: "Centro de Salud Padre Cobo", coords: [-31.60747, -60.71251] },
+            { nombre: "Centro de Salud Baranquita Oeste", coords: [-31.62056, -60.71951] },
+            { nombre: "Centro de Salud Quilmes", coords: [-31.62891, -60.70972] },
+            { nombre: "Centro de Salud Los Hornos", coords: [-31.61228, -60.70505] },
+            { nombre: "Policlinico Vecinal", coords: [-31.61909, -60.69364] },
+            { nombre: "Centro de Salud Villa del Parque", coords: [-31.63163, -60.72196] },
+            { nombre: "Centro de Salud Villa Hipodromo", coords: [-31.60642, -60.71953] },
+            { nombre: "Centro de Salud Dorrego", coords: [-31.59465, -60.68059] },
+            { nombre: "Centro de Salud Gutierrez", coords: [-31.62688, -60.6844] },
+            { nombre: "Centro de Salud Candioti", coords: [-31.63821, -60.6918] },
+            { nombre: "Centro de Salud Alberti", coords: [-31.61172, -60.6837] },
+            { nombre: "Centro de Salud Setubal", coords: [-31.59834, -60.6642] },
+            { nombre: "Centro de Salud Guadalupe Central", coords: [-31.60296, -60.67553] },
+            { nombre: "Centro de Salud Manzana 2", coords: [-31.6651, -60.70077] },
+            { nombre: "Centro de Salud Colastine Norte", coords: [-31.62349, -60.60283] },
+            { nombre: "Centro de Salud La Boca", coords: [-31.69466, -60.676] },
+            { nombre: "Centro de Salud Demetrio Gomez", coords: [-31.65578, -60.69684] },
+            { nombre: "Samco El Pozo", coords: [-31.6357, -60.65887] },
+            { nombre: "Centro de Salud Colastine Sur", coords: [-31.66352, -60.60572] },
+            { nombre: "Centro de Salud La Guardia", coords: [-31.63837, -60.6262] },
+            { nombre: "Centro de Salud Rincon Norte", coords: [-31.60284, -60.56583] },
+            { nombre: "Centro de Salud Abasto", coords: [-31.56093, -60.74242] },
+            { nombre: "Centro de Salud San Agustín", coords: [-31.59268, -60.69884] },
+            { nombre: "Centro de Salud Yapeyú", coords: [-31.56607, -60.73877] },
+            { nombre: "Centro de Salud Estanislao Lopez", coords: [-31.57898, -60.72679] },
+            { nombre: "Centro de Salud Cabaña Leiva", coords: [-31.56468, -60.72585] },
+            { nombre: "Centro de Salud Aceria", coords: [-31.6045, -60.7121] }, // Corregido el orden de Latitud/Longitud para igualar al grupo
+            { nombre: "Centro de Salud Cabal", coords: [-31.59915, -60.72735] },
+            { nombre: "Centro de Salud Juventud (Dacenso)", coords: [-31.58925, -60.73222] },
+            { nombre: "Centro de Salud Las Lomas", coords: [-31.59609, -60.73547] },
+            { nombre: "Centro de Salud Los Troncos", coords: [-31.58294, -60.74538] },
+            { nombre: "Centro de Salud Loyola Sur", coords: [-31.57856, -60.73903] }
+        ];
+
+        let capasCortes = null;
+        let capaPoligonoEnvolvente = null;
+        const EPE_GEOJSON_URL = 'https://www.epe.santafe.gov.ar/mapaepe/datos/cortes_programados.geojson';
+
+        // 3. Colocar los marcadores geográficos individuales en Leaflet
+        centrosSalud.forEach(centro => {
+            L.marker(centro.coords)
+                .bindPopup(`<b>${centro.nombre}</b><br><span style="color:#666; font-size:11px;">Coords: ${centro.coords[0]}, ${centro.coords[1]}</span>`)
+                .addTo(map);
+        });
+
+        // 4. LÓGICA ESPACIAL: Generar polígono envolvente mínimo (Convex Hull)
+        function generarPoligonoCentros() {
+            // MAPEO CRÍTICO: Tomamos [Lat, Long] de tu array y lo invertimos a [Long, Lat] para Turf.js
+            const puntosTurf = centrosSalud.map(c => turf.point([c.coords[1], c.coords[0]]));
+            const coleccionPuntos = turf.featureCollection(puntosTurf);
+
+            // Calcula el polígono perimetral exterior
+            const envolvente = turf.convex(coleccionPuntos);
+
+            if (envolvente) {
+                if (capaPoligonoEnvolvente) map.removeLayer(capaPoligonoEnvolvente);
+
+                // Dibujamos el perímetro azul punteado en el mapa web
+                capaPoligonoEnvolvente = L.geoJSON(envolvente, {
+                    style: {
+                        color: '#007bff',
+                        weight: 3,
+                        fillColor: '#007bff',
+                        fillOpacity: 0.12,
+                        dashArray: '6, 6'
+                    }
+                }).addTo(map);
+                
+                return envolvente;
+            }
+            return null;
+        }
+
+        // 5. EVALUACIÓN DE INTERSECCIONES CON LA EPE
+        async function procesarMonitoreo() {
+            const statusDiv = document.getElementById('status');
+            const alertBox = document.getElementById('alert-box');
+            statusDiv.innerHTML = "<em>Conectando con la base de datos GIS de la EPE...</em>";
+
+            // Creamos o refrescamos la geometría del polígono de centros
+            const poligonoSalud = generarPoligonoCentros();
+
+            try {
+                const response = await fetch(EPE_GEOJSON_URL);
+                if (!response.ok) throw new Error("No se pudo obtener respuesta del servidor de la EPE.");
+                
+                const cortesGeoJSON = await response.json();
+
+                if (capasCortes) map.removeLayer(capasCortes);
+
+                // Dibujar las capas de corte de la EPE en Rojo
+                capasCortes = L.geoJSON(cortesGeoJSON, {
+                    style: { color: '#ff0000', fillColor: '#ff3333', fillOpacity: 0.35, weight: 2 },
+                    onEachFeature: function (feature, layer) {
+                        const info = feature.properties.detalle || feature.properties.motivo || 'Mantenimiento Técnico Programado';
+                        layer.bindPopup(`<b>⚠️ Corte de Energía EPE</b><br><p style="margin:4px 0 0 0; font-size:12px;">${info}</p>`);
+                    }
+                }).addTo(map);
+
+                // Análisis espacial de intersección (Polígono Sanitario vs Polígonos de Cortes)
+                let areaAfectada = false;
+                let cantidadCortesIntersec = 0;
+
+                if (poligonoSalud && cortesGeoJSON.features && cortesGeoJSON.features.length > 0) {
+                    cortesGeoJSON.features.forEach(corte => {
+                        if (corte.geometry && (corte.geometry.type === 'Polygon' || corte.geometry.type === 'MultiPolygon')) {
+                            // turf.booleanIntersects compara si el polígono azul y el rojo se solapan
+                            if (turf.booleanIntersects(poligonoSalud, corte.geometry)) {
+                                areaAfectada = true;
+                                cantidadCortesIntersec++;
+                            }
+                        }
+                    });
+                }
+
+                // Renderizado de alertas dinámicas en la interfaz de usuario
+                if (areaAfectada) {
+                    alertBox.innerHTML = `
+                        <div class="alert-active">
+                            🚨 ALERTA: Se detectaron ${cantidadCortesIntersec} cuadrante(s) de corte interfiriendo con el perímetro de cobertura de los centros.
+                        </div>`;
+                } else {
+                    alertBox.innerHTML = `
+                        <div class="alert-normal">
+                            ✅ Perímetro Estable: Los cortes reportados por la EPE se encuentran fuera del área de cobertura de tus centros.
+                        </div>`;
+                }
+
+                statusDiv.innerHTML = `Último análisis: ${new Date().toLocaleTimeString()}<br>Cortes activos en toda la provincia: <b>${cortesGeoJSON.features.length}</b>`;
+
+            } catch (error) {
+                console.error(error);
+                statusDiv.innerHTML = `<span style="color:red; font-weight:bold;">⚠️ Error de sincronización. Si estás abriendo el archivo localmente desde el disco duro, el navegador bloqueará la lectura por seguridad CORS. Debe correrse bajo un servidor local o un host web.</span>`;
+            }
+        }
+
+        // Ejecutar primer análisis al cargar la vista
+        setTimeout(procesarMonitoreo, 500);
+    </script>
+</body>
+</html>
