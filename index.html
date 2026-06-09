@@ -32,7 +32,7 @@
 
     <div class="info-panel">
         <h3>Área de Cobertura Sanitaria</h3>
-        <p style="font-size: 11px; color: #555; margin-bottom: 12px;">Se genera un polígono perimetral que unifica todos los efectores de salud analizando intersecciones con cortes de la EPE.</p>
+        <p style="font-size: 11px; color: #555; margin-bottom: 12px;">Se analiza individualmente si cada efector de salud se encuentra dentro de los polígonos de corte de la EPE (Sin luz = Sin Internet).</p>
         
         <div class="legend-item">
             <span class="legend-box" style="background: rgba(0, 123, 255, 0.15); border-color: #007bff; border-style: dashed;"></span>
@@ -40,7 +40,7 @@
         </div>
         <div class="legend-item">
             <span class="legend-box" style="background: rgba(255, 51, 51, 0.4); border-color: #ff0000;"></span>
-            <span>Corte Programado EPE</span>
+            <span>Corte Activo / Programado EPE</span>
         </div>
         
         <button class="btn-update" onclick="procesarMonitoreo()">🔄 Sincronizar y Evaluar Perímetro</button>
@@ -63,7 +63,6 @@
         }).addTo(map);
 
         // 2. Parámetros de ubicación de tus centros de salud [Latitud, Longitud]
-        // Se corrigió "Aceria" para asimilarse al resto del array y se removieron duplicados de procesamiento.
         const centrosSalud = [
             { nombre: "Centro de Salud Mendoza Oeste", coords: [-31.64289, -60.73231] },
             { nombre: "Centro de Salud Chalet", coords: [-31.66197, -60.72852] },
@@ -108,7 +107,7 @@
             { nombre: "Centro de Salud Yapeyú", coords: [-31.56607, -60.73877] },
             { nombre: "Centro de Salud Estanislao Lopez", coords: [-31.57898, -60.72679] },
             { nombre: "Centro de Salud Cabaña Leiva", coords: [-31.56468, -60.72585] },
-            { nombre: "Centro de Salud Aceria", coords: [-31.6045, -60.7121] }, // Corregido el orden de Latitud/Longitud para igualar al grupo
+            { nombre: "Centro de Salud Aceria", coords: [-31.6045, -60.7121] },
             { nombre: "Centro de Salud Cabal", coords: [-31.59915, -60.72735] },
             { nombre: "Centro de Salud Juventud (Dacenso)", coords: [-31.58925, -60.73222] },
             { nombre: "Centro de Salud Las Lomas", coords: [-31.59609, -60.73547] },
@@ -118,51 +117,58 @@
 
         let capasCortes = null;
         let capaPoligonoEnvolvente = null;
+        let marcadoresLeaflet = []; // Array global para poder manipular los popups e iconos después
         const EPE_GEOJSON_URL = 'https://www.epe.santafe.gov.ar/mapaepe/datos/cortes_programados.geojson';
 
         // 3. Colocar los marcadores geográficos individuales en Leaflet
-        centrosSalud.forEach(centro => {
-            L.marker(centro.coords)
-                .bindPopup(`<b>${centro.nombre}</b><br><span style="color:#666; font-size:11px;">Coords: ${centro.coords[0]}, ${centro.coords[1]}</span>`)
-                .addTo(map);
-        });
+        function inicializarMarcadores() {
+            // Limpiamos si ya existían
+            marcadoresLeaflet.forEach(m => map.removeLayer(m));
+            marcadoresLeaflet = [];
 
-        // 4. LÓGICA ESPACIAL: Generar polígono envolvente mínimo (Convex Hull)
+            centrosSalud.forEach(centro => {
+                const marker = L.marker(centro.coords)
+                    .bindPopup(`<b>${centro.nombre}</b><br><span style="color:green; font-size:11px;">🟢 Operativo | Con Energía e Internet</span>`)
+                    .addTo(map);
+                
+                // Guardamos una referencia personalizada del nombre dentro del objeto marker
+                marker.options.title = centro.nombre; 
+                marcadoresLeaflet.push(marker);
+            });
+        }
+
+        // 4. LÓGICA ESPACIAL: Generar polígono envolvente mínimo (Convex Hull) de la red
         function generarPoligonoCentros() {
-            // MAPEO CRÍTICO: Tomamos [Lat, Long] de tu array y lo invertimos a [Long, Lat] para Turf.js
             const puntosTurf = centrosSalud.map(c => turf.point([c.coords[1], c.coords[0]]));
             const coleccionPuntos = turf.featureCollection(puntosTurf);
-
-            // Calcula el polígono perimetral exterior
             const envolvente = turf.convex(coleccionPuntos);
 
             if (envolvente) {
                 if (capaPoligonoEnvolvente) map.removeLayer(capaPoligonoEnvolvente);
 
-                // Dibujamos el perímetro azul punteado en el mapa web
                 capaPoligonoEnvolvente = L.geoJSON(envolvente, {
                     style: {
                         color: '#007bff',
-                        weight: 3,
+                        weight: 2,
                         fillColor: '#007bff',
-                        fillOpacity: 0.12,
+                        fillOpacity: 0.05,
                         dashArray: '6, 6'
                     }
                 }).addTo(map);
-                
                 return envolvente;
             }
             return null;
         }
 
-        // 5. EVALUACIÓN DE INTERSECCIONES CON LA EPE
+        // 5. EVALUACIÓN DE INTERSECCIONES Y FILTRADO POR POLÍGONO DE LA EPE
         async function procesarMonitoreo() {
             const statusDiv = document.getElementById('status');
             const alertBox = document.getElementById('alert-box');
             statusDiv.innerHTML = "<em>Conectando con la base de datos GIS de la EPE...</em>";
 
-            // Creamos o refrescamos la geometría del polígono de centros
-            const poligonoSalud = generarPoligonoCentros();
+            // Reiniciamos los marcadores a su estado original "Operativo" antes del análisis
+            inicializarMarcadores();
+            generarPoligonoCentros();
 
             try {
                 const response = await fetch(EPE_GEOJSON_URL);
@@ -172,53 +178,77 @@
 
                 if (capasCortes) map.removeLayer(capasCortes);
 
-                // Dibujar las capas de corte de la EPE en Rojo
+                // Dibujar las zonas de corte provistas por la EPE
                 capasCortes = L.geoJSON(cortesGeoJSON, {
                     style: { color: '#ff0000', fillColor: '#ff3333', fillOpacity: 0.35, weight: 2 },
                     onEachFeature: function (feature, layer) {
                         const info = feature.properties.detalle || feature.properties.motivo || 'Mantenimiento Técnico Programado';
-                        layer.bindPopup(`<b>⚠️ Corte de Energía EPE</b><br><p style="margin:4px 0 0 0; font-size:12px;">${info}</p>`);
+                        layer.bindPopup(`<b>⚠️ Zona de Corte EPE</b><br><p style="margin:4px 0 0 0; font-size:12px;">${info}</p>`);
                     }
                 }).addTo(map);
 
-                // Análisis espacial de intersección (Polígono Sanitario vs Polígonos de Cortes)
-                let areaAfectada = false;
-                let cantidadCortesIntersec = 0;
+                let centrosAfectadosContador = 0;
 
-                if (poligonoSalud && cortesGeoJSON.features && cortesGeoJSON.features.length > 0) {
+                // Si hay cortes y features devueltas por la EPE, las analizamos punto por punto
+                if (cortesGeoJSON.features && cortesGeoJSON.features.length > 0) {
                     cortesGeoJSON.features.forEach(corte => {
+                        // Verificamos que sea una geometría válida de tipo Polígono
                         if (corte.geometry && (corte.geometry.type === 'Polygon' || corte.geometry.type === 'MultiPolygon')) {
-                            // turf.booleanIntersects compara si el polígono azul y el rojo se solapan
-                            if (turf.booleanIntersects(poligonoSalud, corte.geometry)) {
-                                areaAfectada = true;
-                                cantidadCortesIntersec++;
-                            }
+                            
+                            // Iteramos nuestros marcadores para saber si caen dentro de este polígono de corte de la EPE
+                            marcadoresLeaflet.forEach(marker => {
+                                const latLng = marker.getLatLng();
+                                // Turf usa formato [Longitud, Latitud]
+                                const puntoTurf = turf.point([latLng.lng, latLng.lat]);
+
+                                // Evaluamos si el punto del centro de salud está DENTRO del polígono de corte
+                                const estaAdentro = turf.booleanPointInPolygon(puntoTurf, corte.geometry);
+
+                                if (estaAdentro) {
+                                    centrosAfectadosContador++;
+                                    
+                                    // Modificamos el contenido del popup del marcador informando la anomalía
+                                    marker.setPopupContent(`
+                                        <div style="font-family: Arial, sans-serif; min-width: 200px;">
+                                            <h4 style="margin:0; color:#d9534f;">⚠️ ${marker.options.title}</h4>
+                                            <p style="margin:5px 0 0 0; font-size:12px; color:#555;">
+                                                <b>ESTADO CRÍTICO:</b> Ubicado dentro de un cuadrante de corte de la EPE.<br>
+                                                <span style="color:#d9534f; font-weight:bold;">⚡ Sin Suministro Eléctrico</span><br>
+                                                <span style="color:#d9534f; font-weight:bold;">🌐 Conectividad de Internet Caída</span>
+                                            </p>
+                                        </div>
+                                    `);
+                                    
+                                    // Opcional: Podés abrir el popup de los afectados automáticamente para llamar la atención
+                                    marker.openPopup();
+                                }
+                            });
                         }
                     });
                 }
 
-                // Renderizado de alertas dinámicas en la interfaz de usuario
-                if (areaAfectada) {
+                // Renderizado de alertas dinámicas en el panel lateral de la interfaz
+                if (centrosAfectadosContador > 0) {
                     alertBox.innerHTML = `
                         <div class="alert-active">
-                            🚨 ALERTA: Se detectaron ${cantidadCortesIntersec} cuadrante(s) de corte interfiriendo con el perímetro de cobertura de los centros.
+                            🚨 ALERTA: Se detectaron ${centrosAfectadosContador} centro(s) de salud SIN LUZ ni INTERNET al encontrarse dentro de polígonos de corte.
                         </div>`;
                 } else {
                     alertBox.innerHTML = `
                         <div class="alert-normal">
-                            ✅ Perímetro Estable: Los cortes reportados por la EPE se encuentran fuera del área de cobertura de tus centros.
+                            ✅ Red Estable: Ningún centro de salud se encuentra dentro de los polígonos de corte activos de la EPE.
                         </div>`;
                 }
 
-                statusDiv.innerHTML = `Último análisis: ${new Date().toLocaleTimeString()}<br>Cortes activos en toda la provincia: <b>${cortesGeoJSON.features.length}</b>`;
+                statusDiv.innerHTML = `Último análisis: ${new Date().toLocaleTimeString()}<br>Cortes activos en la provincia: <b>${cortesGeoJSON.features.length}</b>`;
 
             } catch (error) {
                 console.error(error);
-                statusDiv.innerHTML = `<span style="color:red; font-weight:bold;">⚠️ Error de sincronización. Si estás abriendo el archivo localmente desde el disco duro, el navegador bloqueará la lectura por seguridad CORS. Debe correrse bajo un servidor local o un host web.</span>`;
+                statusDiv.innerHTML = `<span style="color:red; font-weight:bold;">⚠️ Error de sincronización. Si estás abriendo el archivo localmente desde el disco duro, el navegador bloqueará la lectura por seguridad CORS. Debe correrse bajo un servidor local o un host web (como GitHub Pages).</span>`;
             }
         }
 
-        // Ejecutar primer análisis al cargar la vista
+        // Ejecutar primer análisis automáticamente al cargar la vista
         setTimeout(procesarMonitoreo, 500);
     </script>
 </body>
